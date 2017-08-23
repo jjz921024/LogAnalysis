@@ -8,10 +8,7 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.Locale;
-import java.util.Properties;
+import java.util.*;
 
 /**
  * Created by Jun on 2017/8/17.
@@ -29,8 +26,26 @@ public class KafkaLogProducer {
         kafkaProducer = new KafkaProducer<>(props);
 
         int i = 0;
-        while (true) {
-            if (i%2 == 0) {
+        Scanner scanner = new Scanner(System.in);
+        System.out.println("请输入日志类型(1-fail 2-success 3-normal)和用户ID: ");
+        while (scanner.hasNext()) {
+            System.out.println("请输入日志类型(1-fail 2-success 3-normal)和用户ID: ");
+            int type = scanner.nextInt();
+            int userid = scanner.nextInt();
+
+
+            String s = null;
+            if (type == 1) {
+                s = printFailLog(Calendar.getInstance().getTime(), userid);
+            } else if (type == 2) {
+                s = printSuccessLog(Calendar.getInstance().getTime(), userid);
+            } else {
+                s = printNormalLog(Calendar.getInstance().getTime());
+            }
+            System.out.println(s);
+            sendToKafka(s);
+
+            /*if (i%2 == 0) {
                 String log = printFailLog(Calendar.getInstance().getTime(), userid[i % 5]); //2*5*1000  10秒每个id失败日志
                 sendToKafka(log);
             }
@@ -43,7 +58,7 @@ public class KafkaLogProducer {
                 sendToKafka(log);
             }
             i++;
-            Thread.sleep(1000);
+            Thread.sleep(1000);*/
         }
     }
 

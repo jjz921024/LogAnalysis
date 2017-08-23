@@ -14,7 +14,7 @@ class DBManager() extends Serializable{
   private val in: FileInputStream = new FileInputStream(new File("conf/c3p0.properties"))
 
   try {
-    prop.load(in);
+    prop.load(in)
     cpds.setJdbcUrl(prop.getProperty("jdbcUrl"))
     cpds.setDriverClass(prop.getProperty("driverClass"))
     cpds.setUser(prop.getProperty("user"))

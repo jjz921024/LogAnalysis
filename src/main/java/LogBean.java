@@ -17,7 +17,7 @@ public class LogBean implements Serializable{
     private String loginID;
     private String sourceIP;
     private int loginType;
-    private String destinationIP;  // TODO: 2017/8/14  
+    private String destinationIP;
     private static SimpleDateFormat dateFormat;
 
     static {
@@ -26,12 +26,16 @@ public class LogBean implements Serializable{
 
 
     public LogBean(String destinationIP, String generatedTime, String eventID, String username, String region, String loginType, String loginID, String sourceIP) {
-        this.eventID = new Integer(eventID);
+        if (eventID != null) {
+            this.eventID = new Integer(eventID);
+        }
         this.username = username;
         this.region = region;
         this.loginID = loginID;
         this.sourceIP = sourceIP;
-        this.loginType = new Integer(loginType);  //登录类型只有 失败日志或成功的528日志有
+        if (loginType != null) {
+            this.loginType = new Integer(loginType);  //登录类型只有 失败日志或成功的528日志有
+        }
         this.destinationIP = destinationIP;
         try {
             if (generatedTime != null)
@@ -42,22 +46,20 @@ public class LogBean implements Serializable{
         }
     }
 
-    /**
-     * 登录成功调用的
-     * 只有登录成功的552事件有 目标服务器地址
-     */
     public LogBean(String destinationIP, String generatedTime, String eventid, String loginid, String sourceIP) {
-        this.eventID = new Integer(eventid);
+        if (eventid != null) {
+            this.eventID = new Integer(eventid);
+        }
         this.sourceIP = sourceIP;
         this.destinationIP = destinationIP;
         this.loginID = loginid;
         try {
-            this.generatedTime = dateFormat.parse(generatedTime);
+            if (generatedTime != null)
+                this.generatedTime = dateFormat.parse(generatedTime);
 
         } catch (ParseException e) {
             e.printStackTrace();
         }
-
     }
 
 
@@ -110,4 +112,6 @@ public class LogBean implements Serializable{
     public String getDestinationIP() {
         return destinationIP;
     }
+
+
 }

@@ -1,17 +1,16 @@
 import java.io.{File, FileInputStream}
-import java.sql.{PreparedStatement, Timestamp}
+import java.sql.{Connection, PreparedStatement, Timestamp}
 import java.util
 import java.util.Map.Entry
 import java.util.concurrent.ConcurrentHashMap
 import java.util.{Calendar, Properties}
 
-import org.apache.kafka.clients.consumer.ConsumerRecord
-import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
-import org.apache.spark.streaming.kafka010.KafkaUtils
-import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
+import kafka.serializer.StringDecoder
+import org.apache.log4j.PropertyConfigurator
+import org.apache.spark.SparkConf
+import org.apache.spark.streaming.kafka.KafkaUtils
 import org.apache.spark.streaming.{Seconds, StreamingContext}
-import org.apache.spark.{SparkConf, SparkContext}
+import utils.LogWriter
 
 
 /**
@@ -20,16 +19,18 @@ import org.apache.spark.{SparkConf, SparkContext}
 object LogAnalysisStreaming {
     def main(args: Array[String]) {
         //System.setProperty("hadoop.home.dir", "D:/hadoop-2.7.3/hadoop-2.7.3")
+        PropertyConfigurator.configure("conf/log4j.properties")
+
         val conf = new SparkConf()
-                //.setMaster("local[2]")
+                .setMaster("local[2]")
                 .setAppName("LogAnalysisStreaming")
-        val sc = new SparkContext(conf)
+        //val sc = new SparkContext(conf)
 
         /*val winLog = sc.hadoopFile("E:\\guess_passwd", classOf[TextInputFormat],
             classOf[LongWritable], classOf[Text]).map(
             pair => new String(pair._2.getBytes, 0, pair._2.getLength, "GBK"))*/
 
-        val ssc = new StreamingContext(sc, Seconds(20))
+        val ssc = new StreamingContext(conf, Seconds(1))
         //val socketStream: ReceiverInputDStream[String] = ssc.socketTextStream("localhost", 5142)
 
         //kafka配置
@@ -38,33 +39,34 @@ object LogAnalysisStreaming {
         val in: FileInputStream = new FileInputStream(new File("conf/kafka.properties"))
 
         props.load(in)
-        val kafkaParams = Map[String, Object](
-            "bootstrap.servers" -> props.getProperty("bootstrap.servers"),
-            "key.deserializer" -> classOf[StringDeserializer],
-            "value.deserializer" -> classOf[StringDeserializer],
+        val kafkaParams = Map[String, String](
+            "metadata.broker.list" -> props.getProperty("bootstrap.servers"),
+            //"key.deserializer" -> classOf[StringDeserializer],
+            //"value.deserializer" -> classOf[StringDeserializer],
             "group.id" -> props.getProperty("group.id"),
             "auto.offset.reset" -> props.getProperty("auto.offset.reset"),
-            "enable.auto.commit" -> (true: java.lang.Boolean)
+            "enable.auto.commit" -> "true"
         )
-        val topics: Array[String] = props.getProperty("topics").split(" ")
-        val kafkaStream = KafkaUtils.createDirectStream(ssc, PreferConsistent, Subscribe[String, String](topics, kafkaParams))
+        val topics = props.getProperty("topics").split(" ").toSet
+        //val kafkaStream = KafkaUtils.createDirectStream(ssc, PreferConsistent, Subscribe[String, String](topics, kafkaParams))  //2.0.2
+        val kafkaStream = KafkaUtils.createDirectStream[String, String, StringDecoder, StringDecoder](ssc, kafkaParams, topics)  //1.6.0
 
         // Master节点维护的hashmap
         val chm = new ConcurrentHashMap[String, GuessPasswdBean]()
 
         // 正则
         val logRegex =
-            """([\d+\.\d+\.\d+\.\d+]+).+?([a-zA-Z]{3} [a-zA-Z]{3} \d{2} \d{2}:\d{2}:\d{2} \d{4})\s+(\d{3})\sSecurity.+?[用户名?]+: (\w+) +域:\s+([\w-]+).+?登录类型: (\d).+?调用方登录 ID: ([\(\w,\)]+).+?源网络地址: ([\d+\.\d+\.\d+\.\d+-]+)""".r
-        val logSuccessRegex =
-            """([\d+\.\d+\.\d+\.\d+]+).+([a-zA-Z]{3} [a-zA-Z]{3} \d{2} \d{2}:\d{2}:\d{2} \d{4})\s+(\d{3})\sSecurity.+?登录 ID:  ([\(\w,\)]+).+?源网络地址: ([\d+\.\d+\.\d+\.\d+-]+)""".r
+            """([\d\.]+)##.*?(\w{3} \w{3} \d{2} [\d:]{8} \d{4}).*?\s+(\d{3})\sSecurity.*?(?:.*?:\s){3}(\w+)(?:.*?:\s+)([\w-]+).*?(?:.*?:\s+)(\d+).*?(?:.*?:\s+){6}([\(\w,\)]+).*?(?:.*?:\s+){3}([\d\.]+)""".r
+        val logSuccessRegex = """([\d\.]+)##.*?(\w{3} \w{3} \d{2} [\d:]{8} \d{4}).*?\s+(\d{3})\s+Security.*?(?:.*?:\s+){5}([\(\w,\)]+)(?:.*?:\s+){9}([\d+\.\d+\.\d+\.\d+-]+)""".r
         val eventIDRegex = """\d{4}\s(\d{3})\sSecurity""".r
 
         //sql
         val sql: String = "insert into sysrisktable (sourceIP, destinationIP, startTime, endTime, sysType, riskType, times, eventDesc) values (?,?,?,?,?,?,?,?)"
 
         // 登录失败的事件id
-        val loginSet: Set[Int] = Set(529,530,531,532,533,534,535,536,537,539, 528, 552)
-        val LIMIT_TIMES = 5
+        val loginSet: Set[Int] = Set(529,530,531,532,533,534,535,536,537,539, 552)
+        val LIMIT_TIMES = 2
+
 
 
         // 过滤属于登录信息的日志
@@ -76,10 +78,10 @@ object LogAnalysisStreaming {
                     false
             }
         }
-        def isSuccessLogin(log: ConsumerRecord[String, String]): Boolean = {  //String
-            eventIDRegex.findFirstIn(log.value()) match {
+        def isSuccessLogin(log: String): Boolean = {  //String  ConsumerRecord[String, String]
+            eventIDRegex.findFirstIn(log) match {
                 case Some(eventIDRegex(eventid)) =>
-                    if (eventid.toInt == 552) true else false
+                    if ("552".equals(eventid)) true else false
                 case _ =>
                     false
             }
@@ -89,23 +91,28 @@ object LogAnalysisStreaming {
         /**
           *封装登录失败的log bean 和登录成功的log bean
           */
+        val logWriter = new LogWriter()
         def extractLogBean(log: String): LogBean = {
             logRegex.findFirstIn(log) match {
-                case Some(logRegex(destinationIP, time, eventid, username, region, logintype, loginid, sourceip)) =>
+                case Some(logRegex(destinationIP, time, eventid, username, region, logintype, loginid, sourceip)) => {
                     new LogBean(destinationIP, time, eventid, username, region, logintype,loginid, sourceip)
+                }
                 case _ => {
                     println("regex error")
-                    new LogBean(null, null, null, null, null, null, null, null)
+                    logWriter.writeLog(log)
+                    null
                 }
             }
         }
         def extractSuccessLogBean(log: String): LogBean = {
             logSuccessRegex.findFirstIn(log) match {
-                case Some(logSuccessRegex(destinationIP, time, eventid, loginid, sourceip)) =>
+                case Some(logSuccessRegex(destinationIP, time, eventid, loginid, sourceip)) => {
                     new LogBean(destinationIP, time, eventid, loginid, sourceip)
+                }
                 case _ => {
                     println("regex error")
-                    new LogBean(null, null, null, null, null)
+                    logWriter.writeLog(log)
+                    null
                 }
             }
         }
@@ -115,45 +122,51 @@ object LogAnalysisStreaming {
         def insertHashMap(log: Array[(String, LogBean)], map: ConcurrentHashMap[String, GuessPasswdBean]): Unit = {
             if (log != null && !log.isEmpty) {
                 for (i <- log) {
-                    // TODO: i._1有可能包含SUCCESS标志
-                    val isSuccess: Boolean = if (i._1.split("@").length == 2) true else false
-                    val ipidKey = i._1.split("@")(0)
+                    if (!"ERROR".equals(i._1)) {
 
-                    if (map.containsKey(ipidKey)) {
-                        //todo 只用sourceIP#loginID作为key查询，可以避免更新到猜解成功的事件
-                        val event: GuessPasswdBean = map.get(ipidKey)
+                        val isSuccess: Boolean = if (i._1.split("@").length == 2) true else false
+                        val ipidKey = i._1.split("@")(0)
 
-                        // 登录成功并且相同key达到猜解次数，认为猜解成功事件
-                        if (isSuccess && event.getTimes >= LIMIT_TIMES) {
-                            //替换原有的记录，更改key为加上 @SUCCESS后的key
-                            map.put(i._1, event)
-                            map.remove(ipidKey)
-                            println("发生猜解成功事件！！！！！")
-                        }
+                        if (map.containsKey(ipidKey)) {
+                            //todo 只用sourceIP#loginID作为key查询，可以避免更新到猜解成功的事件
+                            val event: GuessPasswdBean = map.get(ipidKey)
 
-                        // 当前时间小于字段中的超时时间，则该猜解事件未结束，需要更新
-                        if (Calendar.getInstance().getTimeInMillis <= event.getOverTime.getTime) {
-                            //事件未超时，更新事件
-                            event.updateEvent(i._2)
-                        } else if (event.getTimes < LIMIT_TIMES) {
-                            // 事件超时并没有达到阈值，应在map中删除该事件
-                            println(event.getEventKey + "事件失效，移出Map....")
-                            map.remove(ipidKey)
-                        }
+                            if (isSuccess) {
+                                // 有记录，成功
+                                if (event.getTimes >= LIMIT_TIMES) {
+                                    //替换原有的记录，更改key为加上 @SUCCESS后的key
+                                    map.put(i._1, event)
+                                    map.remove(ipidKey)
+                                    println("发生猜解成功事件！！！！！")
+                                } else {
+                                    // 在限制次数内登录成功，不算暴力破解
+                                    map.remove(ipidKey)
+                                    println("在限制次数内登录成功，不算暴力破解")
+                                }
+                            } else {
+                                // 有记录，失败
+                                if (Calendar.getInstance().getTimeInMillis <= event.getOverTime.getTime) {
+                                    // 当前时间小于字段中的超时时间，则该猜解事件未结束，需要更新
+                                    event.updateEvent(i._2)
+                                } else if (event.getTimes < LIMIT_TIMES) {
+                                    // 事件超时并没有达到阈值，应在map中删除该事件
+                                    println(event.getEventKey + "事件失效，移出Map....")
+                                    map.remove(ipidKey)
+                                }
+                            }
 
 
-                    } else {
-                        //map中未包含该日志，直接插入，并设置overtime和times
-                        //todo 并且第一条不是成功日志 避免正确登录页被记录的情况
-                        if (!isSuccess) {
-                            // 不是@SUCCESS的情况
-                            val eventBean: GuessPasswdBean = new GuessPasswdBean(i._2)
-                            map.put(i._1, eventBean)
+                        } else {
+                            //map中未包含该日志，直接插入，并设置overtime和times
+                            //todo 并且第一条不是成功日志 避免正确登录页被记录的情况
+                            if (!isSuccess) {
+                                // 无记录，失败
+                                val eventBean: GuessPasswdBean = new GuessPasswdBean(i._2)
+                                map.put(i._1, eventBean)
+                            }
                         }
                     }
                 }
-                //lock.notifyAll()
-
             }
         }
 
@@ -163,8 +176,28 @@ object LogAnalysisStreaming {
           */
         var loginLog: Array[(String, LogBean)] = null
         kafkaStream.foreachRDD(rdd => {
-            loginLog = rdd.filter(log => filterLoginLog(log.value())).map(log2 => {   //todo
-                if (isSuccessLogin(log2)) {
+            loginLog = rdd.filter(log => filterLoginLog(log._2)).map(log2 => {
+                if (isSuccessLogin(log2._2)) {
+                    val bean: LogBean = extractSuccessLogBean(log2.toString)
+                    if (bean != null) {
+                        (bean.getLogKey+"@SUCCESS", bean)
+                    } else {
+                        ("ERROR", null)
+                    }
+                } else {
+                    val bean: LogBean = extractLogBean(log2.toString)
+                    if (bean != null) {
+                        (bean.getLogKey, bean)
+                    } else {
+                        ("ERROR", null)
+                    }
+                }
+            }).collect()
+        })
+
+        /*kafkaStream.foreachRDD(rdd => {
+            loginLog = rdd.filter(log => filterLoginLog(log.value()).map(log2 => {
+                if (isSuccessLogin(log2)) {    //todo filter出来后还应该是二元组
                     val bean: LogBean = extractSuccessLogBean(log2.toString)
                     (bean.getLogKey+"@SUCCESS", bean)
                 } else {
@@ -172,13 +205,13 @@ object LogAnalysisStreaming {
                     (bean.getLogKey, bean)
                 }
             }).collect()
-        })
+        })*/
 
         /*socketStream.foreachRDD(rdd => {
             loginLog = rdd.filter(log =>
                 filterLoginLog(log.toString)).map(log2 => {
                     //判断是否是登录成功事件  552
-                    if (isSuccessLogin_socket(log2)) {
+                    if (isSuccessLogin(log2)) {
                         val bean: LogBean = extractSuccessLogBean(log2.toString)
                         (bean.getLogKey+"@SUCCESS", bean)
                     } else {
@@ -190,30 +223,22 @@ object LogAnalysisStreaming {
 
         ssc.start()
 
+        val dbManager: DBManager = DBManager.getMDBManager()
         while (true) {
             // 主线程遍历hashmap
             insertHashMap(loginLog, chm)
-            loginLog = null
-
-            /*count += 1
-            if (count == 65535) {
-                val dbThread: DBThread = new DBThread(chm)
-                val thread: Thread = new Thread(dbThread)
-                thread.start()
-                count = 0
-            }*/
+            //loginLog = null
 
 
             //数据库 todo: 开线程写数据库
-            val conn = DBManager.getMDBManager().getConnection
-            val prepareStatement: PreparedStatement = conn.prepareStatement(sql)  //todo 是否需要close
+            val conn: Connection = dbManager.getConnection
+            val prepareStatement: PreparedStatement = conn.prepareStatement(sql)
             conn.setAutoCommit(false)
 
-             //遍历map 打印并写入数据库
+            //遍历map 打印并写入数据库
             val entrySet: util.Set[Entry[String, GuessPasswdBean]] = chm.entrySet()
             val it: util.Iterator[Entry[String, GuessPasswdBean]] = entrySet.iterator()
             while (it.hasNext) {
-
                 val next: Entry[String, GuessPasswdBean] = it.next()
                 println("key: "+ next.getKey + " value: " + next.getValue.toString)
                 val event = next.getValue
@@ -231,15 +256,15 @@ object LogAnalysisStreaming {
                     prepareStatement.setString(8, event.getEventDesc)
 
                     prepareStatement.addBatch()
-                    chm.remove(event.getEventKey)
+                    chm.remove(next.getKey) //成功的key移不出
                 }
             }
             prepareStatement.executeBatch()
             conn.commit()
+            prepareStatement.close()
             conn.close()
             println("=============================================Finish iteration=============================================")
             Thread.sleep(1000)
-
         }
 
 

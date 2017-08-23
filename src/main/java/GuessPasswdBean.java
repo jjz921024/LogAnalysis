@@ -17,7 +17,7 @@ public class GuessPasswdBean {
 
     private Date overTime;
     private String loginID;
-    private static int OVERTIME = 60*1000; //5分种  5*60*1000
+    private static int OVERTIME = 30*1000; //5分种  5*60*1000
 
 
     public GuessPasswdBean(LogBean logBean) {
@@ -35,7 +35,9 @@ public class GuessPasswdBean {
 
         this.destinationIP = logBean.getDestinationIP();
         this.startTime = logBean.getGeneratedTime(); //该key第一次产生登录失败的时间
-        this.overTime = new Date(this.startTime.getTime() + OVERTIME);
+        if (this.startTime != null) {
+            this.overTime = new Date(this.startTime.getTime() + OVERTIME);
+        }
         this.eventDesc = logBean.toString();  //每次将最新的log信息设置为事件描述
         this.times++;
 
